@@ -1,13 +1,24 @@
-import { BufferHelper } from '../utils/buffer-helper';
-import { ErrorTypes, ErrorDetails } from '../errors';
-import Event from '../events';
-import { logger } from '../utils/logger';
+import { BufferHelper } from "../utils/buffer-helper";
+import { ErrorTypes, ErrorDetails } from "../errors";
+import Event from "../events";
+import { logger } from "../utils/logger";
+import { HlsConfig } from "../config";
+import Hls from "../hls";
+import Fragment from "../loader/fragment";
 
-const stallDebounceInterval = 1000;
-const jumpThreshold = 0.5; // tolerance needed as some browsers stalls playback before reaching buffered range end
+const stallDebounceInterval: number = 1000;
+const jumpThreshold: number = 0.5; // tolerance needed as some browsers stalls playback before reaching buffered range end
 
 export default class GapController {
-  constructor (config, media, fragmentTracker, hls) {
+  config: HlsConfig;
+  media: any;
+  fragmentTracker: any;
+  hls: Hls;
+  stallReported: boolean;
+  stalled: number | null = null;
+  nudgeRetry: number = 0;
+
+  constructor(config: HlsConfig, media: any, fragmentTracker: any, hls: Hls) {
     this.config = config;
     this.media = media;
     this.fragmentTracker = fragmentTracker;
@@ -21,15 +32,21 @@ export default class GapController {
    * @param lastCurrentTime
    * @param buffered
    */
-  poll (lastCurrentTime, buffered) {
+  poll(lastCurrentTime: number, buffered: any): void {
     const { config, media } = this;
     const currentTime = media.currentTime;
     const tnow = window.performance.now();
+    const stalledDuration =
+      typeof this.stalled === "number" ? tnow - this.stalled : 0;
 
     if (currentTime !== lastCurrentTime) {
       // The playhead is now moving, but was previously stalled
       if (this.stallReported) {
-        logger.warn(`playback not stuck anymore @${currentTime}, after ${Math.round(tnow - this.stalled)}ms`);
+        logger.warn(
+          `playback not stuck anymore @${currentTime}, after ${Math.round(
+            stalledDuration
+          )}ms`
+        );
         this.stallReported = false;
       }
       this.stalled = null;
@@ -47,8 +64,11 @@ export default class GapController {
 
     // The playhead isn't moving but it should be
     // Allow some slack time to for small stalls to resolve themselves
-    const stalledDuration = tnow - this.stalled;
-    const bufferInfo = BufferHelper.bufferInfo(media, currentTime, config.maxBufferHole);
+    const bufferInfo = BufferHelper.bufferInfo(
+      media,
+      currentTime,
+      config.maxBufferHole
+    );
     if (!this.stalled) {
       this.stalled = tnow;
       return;
@@ -66,7 +86,7 @@ export default class GapController {
    * @param stalledDuration - The amount of time Hls.js has been stalling for.
    * @private
    */
-  _tryFixBufferStall (bufferInfo, stalledDuration) {
+  _tryFixBufferStall(bufferInfo: any, stalledDuration: number): void {
     const { config, fragmentTracker, media } = this;
     const currentTime = media.currentTime;
 
@@ -77,7 +97,10 @@ export default class GapController {
       this._trySkipBufferHole(partial);
     }
 
-    if (bufferInfo.len > jumpThreshold && stalledDuration > config.highBufferWatchdogPeriod * 1000) {
+    if (
+      bufferInfo.len > jumpThreshold &&
+      stalledDuration > config.highBufferWatchdogPeriod * 1000
+    ) {
       // Try to nudge currentTime over a buffer hole if we've been stalling for the configured amount of seconds
       // We only try to jump the hole if it's under the configured size
       // Reset stalled so to rearm watchdog timer
@@ -91,12 +114,14 @@ export default class GapController {
    * @param bufferLen - The playhead distance from the end of the current buffer segment.
    * @private
    */
-  _reportStall (bufferLen) {
+  _reportStall(bufferLen: number): void {
     const { hls, media, stallReported } = this;
     if (!stallReported) {
       // Report stalled error once
       this.stallReported = true;
-      logger.warn(`Playback stalling at @${media.currentTime} due to low buffer`);
+      logger.warn(
+        `Playback stalling at @${media.currentTime} due to low buffer`
+      );
       hls.trigger(Event.ERROR, {
         type: ErrorTypes.MEDIA_ERROR,
         details: ErrorDetails.BUFFER_STALLED_ERROR,
@@ -111,7 +136,7 @@ export default class GapController {
    * @param partial - The partial fragment found at the current time (where playback is stalling).
    * @private
    */
-  _trySkipBufferHole (partial) {
+  _trySkipBufferHole(partial: Fragment): void {
     const { hls, media } = this;
     const currentTime = media.currentTime;
     let lastEndTime = 0;
@@ -120,7 +145,9 @@ export default class GapController {
       let startTime = media.buffered.start(i);
       if (currentTime >= lastEndTime && currentTime < startTime) {
         media.currentTime = Math.max(startTime, media.currentTime + 0.1);
-        logger.warn(`skipping hole, adjusting currentTime from ${currentTime} to ${media.currentTime}`);
+        logger.warn(
+          `skipping hole, adjusting currentTime from ${currentTime} to ${media.currentTime}`
+        );
         this.stalled = null;
         hls.trigger(Event.ERROR, {
           type: ErrorTypes.MEDIA_ERROR,
@@ -139,7 +166,7 @@ export default class GapController {
    * Attempts to fix buffer stalls by advancing the mediaElement's current time by a small amount.
    * @private
    */
-  _tryNudgeBuffer () {
+  _tryNudgeBuffer(): void {
     const { config, hls, media } = this;
     const currentTime = media.currentTime;
     const nudgeRetry = (this.nudgeRetry || 0) + 1;
@@ -156,7 +183,9 @@ export default class GapController {
         fatal: false
       });
     } else {
-      logger.error(`still stuck in high buffer @${currentTime} after ${config.nudgeMaxRetry}, raise fatal error`);
+      logger.error(
+        `still stuck in high buffer @${currentTime} after ${config.nudgeMaxRetry}, raise fatal error`
+      );
       hls.trigger(Event.ERROR, {
         type: ErrorTypes.MEDIA_ERROR,
         details: ErrorDetails.BUFFER_STALLED_ERROR,
